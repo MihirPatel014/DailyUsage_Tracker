@@ -1,20 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getCycleStartDate } from '../db';
-import { Plus, ShoppingCart } from 'lucide-react';
+import { Plus, Minus, ShoppingCart, Clock } from 'lucide-react';
 import { Button } from './ui/Button';
-import { Modal } from './ui/Modal';
+import { Item } from '../types';
 
 interface DashboardProps {
   onAddItemClick: () => void;
 }
 
+interface CartItem {
+  item: Item;
+  quantity: number;
+}
+
 export const Dashboard: React.FC<DashboardProps> = ({ onAddItemClick }) => {
   const [cycleStart, setCycleStart] = useState(getCycleStartDate());
-  const [selectedItem, setSelectedItem] = useState<{ id: number; name: string; rate: number; provider?: string } | null>(null);
-  const [qty, setQty] = useState('');
-  const [note, setNote] = useState('');
-  const [provider, setProvider] = useState('');
+  const [cart, setCart] = useState<CartItem[]>([]);
 
   // Listen for cycle reset events
   useEffect(() => {
@@ -26,30 +28,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ onAddItemClick }) => {
   const items = useLiveQuery(() => db.items.filter(item => item.isRoutine === true).toArray());
   const logs = useLiveQuery(() => db.logs.where('timestamp').aboveOrEqual(cycleStart).toArray(), [cycleStart]);
 
-  const handleAddEntry = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedItem || !qty) return;
-
-    const quantity = parseFloat(qty);
-    const cost = quantity * selectedItem.rate;
-    const now = new Date();
-
-    await db.logs.add({
-      itemId: selectedItem.id,
-      date: now.toISOString().split('T')[0],
-      timestamp: now.getTime(),
-      quantity,
-      cost,
-      provider: provider || selectedItem.provider,
-      note
-    });
-
-    setSelectedItem(null);
-    setQty('');
-    setNote('');
-    setProvider('');
-  };
-
   const getItemStats = (itemId: number) => {
     if (!logs) return { totalQty: 0, totalCost: 0 };
     return logs
@@ -60,10 +38,77 @@ export const Dashboard: React.FC<DashboardProps> = ({ onAddItemClick }) => {
       }), { totalQty: 0, totalCost: 0 });
   };
 
+  const getCartQuantity = (itemId: number) => {
+    const cartItem = cart.find(c => c.item.id === itemId);
+    return cartItem ? cartItem.quantity : 0;
+  };
+
+  const incrementItem = (item: Item) => {
+    setCart(prev => {
+      const existing = prev.find(c => c.item.id === item.id);
+      if (existing) {
+        return prev.map(c =>
+          c.item.id === item.id
+            ? { ...c, quantity: c.quantity + 1 }
+            : c
+        );
+      }
+      return [...prev, { item, quantity: 1 }];
+    });
+  };
+
+  const decrementItem = (item: Item) => {
+    setCart(prev => {
+      const existing = prev.find(c => c.item.id === item.id);
+      if (!existing) return prev;
+
+      if (existing.quantity <= 1) {
+        return prev.filter(c => c.item.id !== item.id);
+      }
+
+      return prev.map(c =>
+        c.item.id === item.id
+          ? { ...c, quantity: c.quantity - 1 }
+          : c
+      );
+    });
+  };
+
+  const handleCheckout = async () => {
+    if (cart.length === 0) return;
+
+    const now = new Date();
+    const timestamp = now.getTime();
+    const date = now.toISOString().split('T')[0];
+
+    // Add all cart items to logs with the same timestamp
+    for (const cartItem of cart) {
+      const cost = cartItem.quantity * cartItem.item.rate;
+      await db.logs.add({
+        itemId: cartItem.item.id!,
+        date,
+        timestamp,
+        quantity: cartItem.quantity,
+        cost,
+        provider: cartItem.item.provider,
+        note: `Added at ${now.toLocaleTimeString()}`
+      });
+    }
+
+    // Clear cart
+    setCart([]);
+  };
+
+  const getTotalCost = () => {
+    return cart.reduce((total, cartItem) => {
+      return total + (cartItem.quantity * cartItem.item.rate);
+    }, 0);
+  };
+
   if (!items) return <div className="p-4 text-center">Loading...</div>;
 
   return (
-    <div className="space-y-6 pb-20">
+    <div className="space-y-6 pb-32">
       <header className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Daily Routine</h1>
@@ -81,99 +126,123 @@ export const Dashboard: React.FC<DashboardProps> = ({ onAddItemClick }) => {
           <Button onClick={onAddItemClick}>Add Item</Button>
         </div>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {items.map(item => {
-            const stats = getItemStats(item.id!);
-            return (
-              <div key={item.id} className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 flex flex-col justify-between">
-                <div>
-                  <div className="flex justify-between items-start mb-2">
-                    <h3 className="font-semibold text-lg text-gray-900 dark:text-gray-100">{item.name}</h3>
-                    <span className="text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 px-2 py-1 rounded-full">
-                      {item.unit}
-                    </span>
-                  </div>
-                  <div className="space-y-1 mb-4">
-                    <div className="text-3xl font-bold text-gray-900 dark:text-gray-100">
-                      {stats.totalQty} <span className="text-sm font-normal text-gray-500 dark:text-gray-400">{item.unit}s</span>
+        <div className="space-y-4">
+          {/* Items List */}
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-700">
+            {items.map(item => {
+              const stats = getItemStats(item.id!);
+              const cartQty = getCartQuantity(item.id!);
+
+              return (
+                <div key={item.id} className="p-4">
+                  <div className="flex items-center justify-between gap-4">
+                    {/* Item Info */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <h3 className="font-semibold text-gray-900 dark:text-gray-100">{item.name}</h3>
+                        <span className="text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 px-2 py-0.5 rounded-full">
+                          {item.unit}
+                        </span>
+                      </div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                        ₹{item.rate}/{item.unit}
+                      </div>
+
+                      {/* Daily Progress */}
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-sm font-medium text-gray-500 dark:text-gray-400">Today:</span>
+                        <span className="text-xl font-bold text-blue-600 dark:text-blue-400">{stats.totalQty}</span>
+                        <span className="text-xs text-gray-400">({item.unit}s)</span>
+                        {stats.totalCost > 0 && (
+                          <span className="text-xs text-gray-400 ml-1">• ₹{stats.totalCost.toFixed(2)}</span>
+                        )}
+                      </div>
                     </div>
-                    <div className="text-sm text-gray-500 dark:text-gray-400">
-                      Total Cost: <span className="font-medium text-gray-900 dark:text-gray-200">${stats.totalCost.toFixed(2)}</span>
+
+                    {/* +/- Controls */}
+                    <div className="flex flex-col items-end gap-1">
+                      <div className="flex items-center gap-2 bg-gray-50 dark:bg-gray-900/50 p-1 rounded-lg border border-gray-100 dark:border-gray-700">
+                        <button
+                          onClick={() => decrementItem(item)}
+                          disabled={cartQty === 0}
+                          className="w-8 h-8 flex items-center justify-center rounded-md border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:bg-white dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors bg-white dark:bg-gray-800"
+                        >
+                          <Minus size={16} />
+                        </button>
+
+                        <div className="w-8 text-center font-mono font-bold text-gray-900 dark:text-gray-100">
+                          {cartQty}
+                        </div>
+
+                        <button
+                          onClick={() => incrementItem(item)}
+                          className="w-8 h-8 flex items-center justify-center rounded-md bg-blue-500 text-white hover:bg-blue-600 transition-colors shadow-sm"
+                        >
+                          <Plus size={16} />
+                        </button>
+                      </div>
+                      {cartQty > 0 && (
+                        <span className="text-[10px] text-blue-600 dark:text-blue-400 font-medium bg-blue-50 dark:bg-blue-900/20 px-1.5 py-0.5 rounded">
+                          In Cart
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
-                <Button
-                  onClick={() => {
-                    setSelectedItem(item);
-                    setProvider(item.provider || '');
-                  }}
-                  className="w-full"
-                >
-                  <Plus size={18} className="mr-2" />
-                  Add Entry
-                </Button>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       )}
 
-      {/* Add Entry Modal */}
-      <Modal
-        isOpen={!!selectedItem}
-        onClose={() => setSelectedItem(null)}
-        title={`Add Entry: ${selectedItem?.name}`}
-      >
-        <form onSubmit={handleAddEntry} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Quantity ({selectedItem?.unit})
-            </label>
-            <input
-              type="number"
-              step="any"
-              required
-              autoFocus
-              value={qty}
-              onChange={(e) => setQty(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
-              placeholder="e.g. 1"
-            />
-          </div>
+      {/* Floating Cart Summary */}
+      {cart.length > 0 && (
+        <div className="fixed bottom-20 left-0 right-0 p-4 bg-gradient-to-t from-gray-50 dark:from-gray-900 via-gray-50 dark:via-gray-900 to-transparent pointer-events-none">
+          <div className="max-w-4xl mx-auto pointer-events-auto">
+            <div className="bg-blue-600 dark:bg-blue-700 text-white rounded-xl shadow-lg p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <ShoppingCart size={20} />
+                  <span className="font-semibold">
+                    {cart.length} item{cart.length !== 1 ? 's' : ''} in cart
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Clock size={16} />
+                  <span className="text-sm opacity-90">
+                    {new Date().toLocaleTimeString()}
+                  </span>
+                </div>
+              </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Provider
-            </label>
-            <input
-              type="text"
-              value={provider}
-              onChange={(e) => setProvider(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
-              placeholder="Optional provider name"
-            />
-          </div>
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex-1 overflow-hidden">
+                  <div className="flex flex-wrap gap-x-4 gap-y-1">
+                    {cart.map((cartItem, idx) => (
+                      <div key={idx} className="text-sm opacity-90 whitespace-nowrap">
+                        • {cartItem.item.name}: <b>{cartItem.quantity}</b>
+                      </div>
+                    ))}
+                  </div>
+                </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Note
-            </label>
-            <textarea
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              rows={2}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
-              placeholder="Optional note"
-            />
+                <div className="text-right min-w-[100px]">
+                  <div className="text-2xl font-bold">
+                    ₹{getTotalCost().toFixed(2)}
+                  </div>
+                  <Button
+                    onClick={handleCheckout}
+                    className="mt-2 w-full bg-white text-blue-600 hover:bg-gray-100 border-none"
+                    size="sm"
+                  >
+                    Save All
+                  </Button>
+                </div>
+              </div>
+            </div>
           </div>
-
-          <div className="pt-2">
-            <Button type="submit" className="w-full">
-              Save Entry
-            </Button>
-          </div>
-        </form>
-      </Modal>
+        </div>
+      )}
     </div>
   );
 };
