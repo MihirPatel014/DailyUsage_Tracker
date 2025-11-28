@@ -1,0 +1,5 @@
+{
+  "name": "DailyUsage Tracker",
+  "description": "A mobile-friendly PWA to track daily consumption of household items like milk and water. Features offline support, monthly cycles, and history.",
+  "requestFramePermissions": []
+}
