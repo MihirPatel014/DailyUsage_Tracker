@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getCycleStartDate } from '../db';
-import { Plus, Minus, ShoppingCart, Clock } from 'lucide-react';
+import { Plus, Minus, ShoppingCart, Clock, ChevronLeft, ChevronRight, Calendar } from 'lucide-react';
 import { Button } from './ui/Button';
 import { Item } from '../types';
 
@@ -17,6 +17,8 @@ interface CartItem {
 export const Dashboard: React.FC<DashboardProps> = ({ onAddItemClick }) => {
   const [cycleStart, setCycleStart] = useState(getCycleStartDate());
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const dateInputRef = useRef<HTMLInputElement>(null);
 
   // Listen for cycle reset events
   useEffect(() => {
@@ -26,11 +28,23 @@ export const Dashboard: React.FC<DashboardProps> = ({ onAddItemClick }) => {
   }, []);
 
   const items = useLiveQuery(() => db.items.filter(item => item.isRoutine === true).toArray());
-  const logs = useLiveQuery(() => db.logs.where('timestamp').aboveOrEqual(cycleStart).toArray(), [cycleStart]);
+  // Fetch logs for the selected date specifically to show accurate daily stats
+  // We keep the cycleStart logic if needed for other things, but for "Daily Progress" we probably want THAT day's progress.
+  // However, the original code used cycleStart. If the user wants to see "Cycle Total", we should keep that.
+  // But the label said "Today". Let's fetch logs for the selected date to match the "Daily Usage" expectation.
+  // Or better, fetch BOTH? 
+  // Let's assume the user wants to see stats for the selected date on the cards.
+  const dateLogs = useLiveQuery(
+    () => db.logs.where('date').equals(selectedDate).toArray(),
+    [selectedDate]
+  );
+
+  // We can also fetch cycle logs if we want to show cycle totals, but for now let's focus on the day view
+  // since the tool is "DailyusageTracker".
 
   const getItemStats = (itemId: number) => {
-    if (!logs) return { totalQty: 0, totalCost: 0 };
-    return logs
+    if (!dateLogs) return { totalQty: 0, totalCost: 0 };
+    return dateLogs
       .filter(l => l.itemId === itemId)
       .reduce((acc, log) => ({
         totalQty: acc.totalQty + log.quantity,
@@ -77,16 +91,21 @@ export const Dashboard: React.FC<DashboardProps> = ({ onAddItemClick }) => {
   const handleCheckout = async () => {
     if (cart.length === 0) return;
 
+    // Use selectedDate for the log entry
+    // Construct timestamp preserving current time but on selected date
+    const [year, month, day] = selectedDate.split('-').map(Number);
+    const targetDate = new Date(year, month - 1, day);
     const now = new Date();
-    const timestamp = now.getTime();
-    const date = now.toISOString().split('T')[0];
+    targetDate.setHours(now.getHours(), now.getMinutes(), now.getSeconds(), now.getMilliseconds());
 
-    // Add all cart items to logs with the same timestamp
+    const timestamp = targetDate.getTime();
+
+    // Add all cart items to logs
     for (const cartItem of cart) {
       const cost = cartItem.quantity * cartItem.item.rate;
       await db.logs.add({
         itemId: cartItem.item.id!,
-        date,
+        date: selectedDate, // Use the selected date string
         timestamp,
         quantity: cartItem.quantity,
         cost,
@@ -105,16 +124,102 @@ export const Dashboard: React.FC<DashboardProps> = ({ onAddItemClick }) => {
     }, 0);
   };
 
+  const handlePrevDay = () => {
+    const [y, m, d] = selectedDate.split('-').map(Number);
+    const date = new Date(y, m - 1, d - 1);
+    setSelectedDate(formatDateForInput(date));
+  };
+
+  const handleNextDay = () => {
+    const [y, m, d] = selectedDate.split('-').map(Number);
+    const date = new Date(y, m - 1, d + 1);
+    setSelectedDate(formatDateForInput(date));
+  };
+
+  const formatDateForInput = (date: Date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+
+  const getDisplayDate = (dateStr: string) => {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    return new Date(y, m - 1, d);
+  };
+
+  const isToday = selectedDate === new Date().toISOString().split('T')[0];
+
   if (!items) return <div className="p-4 text-center">Loading...</div>;
 
   return (
     <div className="space-y-6 pb-32">
-      <header className="flex items-center justify-between">
-        <div>
+      <header className="space-y-4">
+        <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold">Daily Routine</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">
             Cycle started: {new Date(cycleStart).toLocaleDateString()}
           </p>
+        </div>
+
+        {/* Date Selection Box */}
+        <div className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700">
+          <div className="flex items-center justify-between gap-4">
+            <button
+              onClick={handlePrevDay}
+              className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg text-gray-600 dark:text-gray-400 transition-colors"
+            >
+              <ChevronLeft size={24} />
+            </button>
+
+            <div
+              className="flex-1 text-center relative group cursor-pointer"
+              onClick={() => {
+                if (dateInputRef.current) {
+                  const input = dateInputRef.current;
+                  // Use robust fallback or modern API
+                  // Cast to any to avoid TS assuming showPicker always exists (which makes else branch 'never')
+                  if (typeof (input as any).showPicker === 'function') {
+                    (input as any).showPicker();
+                  } else {
+                    input.focus();
+                  }
+                }
+              }}
+            >
+              <div className="text-sm text-gray-500 dark:text-gray-400 font-medium mb-1">
+                {isToday ? 'Today' : getDisplayDate(selectedDate).toLocaleDateString(undefined, { weekday: 'long' })}
+              </div>
+              <div className="text-2xl font-bold text-gray-900 dark:text-gray-100 flex items-center justify-center gap-2">
+                {getDisplayDate(selectedDate).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}
+                <Calendar size={16} className="text-gray-400 group-hover:text-blue-500 transition-colors" />
+              </div>
+
+              {/* Invisible Date Input using modern showPicker API or fallback */}
+              <input
+                ref={dateInputRef}
+                type="date"
+                value={selectedDate}
+                onChange={(e) => e.target.value && setSelectedDate(e.target.value)}
+                className="absolute opacity-0 pointer-events-none"
+                style={{
+                  left: '50%',
+                  top: '50%',
+                  width: 1,
+                  height: 1,
+                  zIndex: -1,
+                  transform: 'translate(-50%, -50%)'
+                }}
+              />
+            </div>
+
+            <button
+              onClick={handleNextDay}
+              className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg text-gray-600 dark:text-gray-400 transition-colors"
+            >
+              <ChevronRight size={24} />
+            </button>
+          </div>
         </div>
       </header>
 
@@ -150,7 +255,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onAddItemClick }) => {
 
                       {/* Daily Progress */}
                       <div className="flex items-baseline gap-2">
-                        <span className="text-sm font-medium text-gray-500 dark:text-gray-400">Today:</span>
+                        <span className="text-sm font-medium text-gray-500 dark:text-gray-400">
+                          {isToday ? 'Today:' : `${getDisplayDate(selectedDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}:`}
+                        </span>
                         <span className="text-xl font-bold text-blue-600 dark:text-blue-400">{stats.totalQty}</span>
                         <span className="text-xs text-gray-400">({item.unit}s)</span>
                         {stats.totalCost > 0 && (
